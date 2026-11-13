@@ -25,7 +25,6 @@ AI 코딩 에이전트(Claude Code 등)와 사람이 **어느 PC에서든** 이�
 ```
 src/                    ← GitHub Pages 로 배포되는 웹 앱 (빌드 없음, 순수 HTML/CSS/JS)
   index.html            화면(home, pick, write, done, board, kid, settings)을 <section> 으로 전환
-                        home 위쪽에 '오늘 일기를 쓴 친구' 줄(#todayStrip, 누르면 그 친구 기록)
                         home 제목은 "오늘의 감정을 골라보세요", pick 제목은 "{이름}, 지금 기분이 어때요?"
                         settings 는 메뉴에 없음: 로고(.brand) 2.5초 안에 5번 클릭 → 관리자 화면 (아이들에게 숨김)
   app.js                전체 로직 (IIFE 하나, 프레임워크 없음)
@@ -61,6 +60,13 @@ private/                (gitignore) 실명 명단 등 비공개 파일
   - `key`: 반 비밀번호
   - `kids`: 명단 캐시
   - `pending`: 아직 못 보낸 기록. 오프라인일 때 쌓였다가 `online` 이벤트나 30초마다 다시 보냅니다.
+  - `today`: 오늘 기록 사본(사진 데이터 제외). 앱을 열자마자 ✔ 표시를 그리고, 서버 응답이 오면 갱신합니다.
+- **속도** (Apps Script는 요청마다 1~3초 걸립니다):
+  - 처음 열 때는 `init` 하나만 보냅니다(명단 + 오늘 기록). `show('home', { refresh: false })`가 그 역할입니다.
+  - 사진은 IndexedDB `arum-photos`에 ID별로 영구 보관합니다. 사진 ID는 바뀌지 않아서(새 사진 = 새 ID) 한 번 받으면 다시 받지 않습니다.
+  - 모아보기나 친구 기록을 그리면 큰 사진을 뒤에서 2개씩 미리 받습니다(`prefetchFull`). 데이터 절약 모드에서는 하지 않습니다.
+  - 사진 크게 보기는 썸네일을 먼저 띄우고, 큰 사진이 오면 바꿔 끼웁니다.
+  - 개발 서버를 `--slow`로 켜면 응답마다 1.5초씩 늦춰서 실제 속도를 흉내 냅니다(`.claude/launch.json`의 `emotion-app-slow-server`).
 - **서버 버전**: `Code.gs`의 `SERVER_VERSION`을 모든 응답에 `version`으로 넣습니다(현재 2 = 사진).
   - `app.js`의 `NEED_SERVER_VERSION`보다 낮으면 첫 화면과 설정 화면에 "Apps Script 새 버전 배포 필요" 경고를 띄웁니다. 예전 Code.gs는 version이 없어서 1로 봅니다.
   - **Code.gs에서 API를 바꾸면 두 숫자를 함께 올리세요.** 사용자가 "새 배포"를 눌러 예전 주소에 예전 코드가 남아 사진만 빠진 적이 있습니다.

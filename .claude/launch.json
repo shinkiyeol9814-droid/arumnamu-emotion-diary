@@ -1,7 +1,34 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "emotion-app", "runtimeExecutable": "python", "runtimeArgs": ["tools/dev_server.py", "8765"], "port": 8765 },
-    { "name": "emotion-app-old-server", "runtimeExecutable": "python", "runtimeArgs": ["tools/dev_server.py", "8766", "--old"], "port": 8766 }
+    {
+      "name": "emotion-app",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "tools/dev_server.py",
+        "8765"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "emotion-app-old-server",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "tools/dev_server.py",
+        "8766",
+        "--old"
+      ],
+      "port": 8766
+    },
+    {
+      "name": "emotion-app-slow-server",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "tools/dev_server.py",
+        "8767",
+        "--slow"
+      ],
+      "port": 8767
+    }
   ]
 }

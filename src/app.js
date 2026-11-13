@@ -22,6 +22,8 @@
     { id: 'snow', icon: '❄️', name: '눈' },
   ];
 
+  const ymdNow = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
   // ---------- 노트북에 보관하는 것 (반 비밀번호, 명단 캐시, 못 보낸 기록) ----------
   const LS = {
     get(k, d) { try { const v = localStorage.getItem('arum.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -40,6 +42,20 @@
   let kids = LS.get('kids', []);           // [{no, name}]
   let pending = LS.get('pending', []);      // 아직 시트에 못 올린 기록
   const dayCache = {};                      // date -> { no: entry }
+  // 오늘 기록은 기기에도 보관 → 앱을 열자마자 ✔ 표시 (서버 응답은 뒤에 와서 갱신)
+  {
+    const t = LS.get('today', null);
+    if (t && t.date === ymdNow()) dayCache[t.date] = t.map;
+  }
+  function setDay(date, map) {
+    dayCache[date] = map;
+    if (date === todayKey()) {
+      const slim = {};
+      for (const [no, e] of Object.entries(map)) { const c = Object.assign({}, e); delete c.thumbData; delete c.photoData; slim[no] = c; }
+      LS.set('today', { date, map: slim });
+    }
+  }
+  const toMap = entries => Object.fromEntries(entries.map(e => [String(e.no), e]));
 
   // ---------- 서버 호출 ----------
   async function api(action, body = {}) {
@@ -90,11 +106,11 @@
   let boardDate = todayKey();
   let calMonth = todayKey().slice(0, 7);
 
-  function show(id) {
+  function show(id, opts = {}) {
     document.querySelectorAll('.screen').forEach(s => { s.hidden = s.id !== id; });
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.go === id));
     window.scrollTo(0, 0);
-    if (id === 'home') renderHome(true);
+    if (id === 'home') renderHome(opts.refresh !== false);
     if (id === 'board') renderBoard();
     if (id === 'settings') renderSettings();
   }
@@ -123,7 +139,7 @@
   async function loadDay(date) {
     try {
       const { entries } = await api('day', { date });
-      dayCache[date] = Object.fromEntries(entries.map(e => [String(e.no), e]));
+      setDay(date, toMap(entries));
       return true;
     } catch (e) { handleError(e); return false; }
   }
@@ -149,7 +165,10 @@
         const done = (res.items || []).find(x => x.date === p.date && String(x.no) === String(p.no)) || {};
         const ent = Object.assign({}, p, { photoId: done.photoId || null, thumbId: done.thumbId || null });
         delete ent.photoData; delete ent.photoRemove;
-        (dayCache[p.date] ||= {})[p.no] = ent; // thumbData 는 화면 표시용으로 남겨 둠
+        setDay(p.date, Object.assign({}, dayCache[p.date] || {}, { [p.no]: ent })); // thumbData 는 화면 표시용
+        // 방금 올린 사진은 기기 사진 보관함에 넣어 두면 다시 받을 필요가 없음
+        if (done.photoId && p.photoData) photoStore.set(done.photoId, p.photoData);
+        if (done.thumbId && p.thumbData) photoStore.set(done.thumbId, p.thumbData);
       });
     } catch (e) { handleError(e); }
     finally { flushing = false; renderStatus(); }
@@ -195,26 +214,6 @@
         el('span', {}, k.name)));
     });
     $('#doneCount').textContent = kids.length ? `· 오늘 ${done} / ${kids.length}명 썼어요` : '';
-    drawTodayStrip(today);
-  }
-
-  // 첫 화면 위쪽: 오늘 일기를 쓴 친구들 (누르면 그 친구 기록)
-  function drawTodayStrip(today) {
-    const box = $('#todayStrip'); box.innerHTML = '';
-    const list = kids.filter(k => today[k.no]);
-    Object.keys(today).filter(no => !kids.some(k => k.no === no)).forEach(no => list.push({ no, name: today[no].name || `${no}번` }));
-    box.hidden = !list.length;
-    if (!list.length) return;
-    box.append(el('div', { class: 'strip-title' }, `🌱 오늘 일기를 쓴 친구 ${list.length}명`));
-    const row = el('div', { class: 'strip-row' });
-    list.forEach(k => {
-      const ent = today[k.no];
-      row.append(el('button', { class: 'strip-kid', title: EMO[ent.emotion]?.name || '', onclick: () => openKid(k.no) },
-        el('img', { src: imgOf(ent.emotion), alt: '' }),
-        el('span', {}, k.name),
-        hasPhoto(ent) ? el('span', { class: 'strip-cam', 'aria-label': '사진 있음' }, '📷') : null));
-    });
-    box.append(row);
   }
 
   function startKid(no) {
@@ -264,12 +263,50 @@
   }
 
   // ---------- 사진 ----------
+  // 사진 ID 는 바뀌지 않으므로(새 사진 = 새 ID) 한 번 받은 사진은 기기에 계속 보관
+  const photoStore = (() => {
+    let dbp = null;
+    const open = () => (dbp ||= new Promise((ok, bad) => {
+      const r = indexedDB.open('arum-photos', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('p');
+      r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+    }));
+    return {
+      async get(id) {
+        try {
+          const db = await open();
+          return await new Promise(ok => { const q = db.transaction('p').objectStore('p').get(id); q.onsuccess = () => ok(q.result || null); q.onerror = () => ok(null); });
+        } catch (e) { return null; }
+      },
+      async set(id, data) { try { (await open()).transaction('p', 'readwrite').objectStore('p').put(data, id); } catch (e) { /* 무시 */ } },
+    };
+  })();
   const photoCache = new Map(); // id -> Promise<dataURL>
   function photoSrc(id) {
     if (!photoCache.has(id)) {
-      photoCache.set(id, api('photo', { id }).then(r => r.data).catch(e => { photoCache.delete(id); throw e; }));
+      photoCache.set(id, (async () => {
+        const saved = await photoStore.get(id);
+        if (saved) return saved;
+        const data = (await api('photo', { id })).data;
+        photoStore.set(id, data);
+        return data;
+      })().catch(e => { photoCache.delete(id); throw e; }));
     }
     return photoCache.get(id);
+  }
+  // 화면에 나온 사진의 큰 사진을 뒤에서 미리 받아 둠 (2개씩) → 눌렀을 때 바로 열림
+  const prefetchQueue = [];
+  let prefetching = 0;
+  function prefetchFull(ents) {
+    if (navigator.connection && navigator.connection.saveData) return;
+    ents.forEach(e => { if (e && e.photoId && e.photoId !== e.thumbId && !photoCache.has(e.photoId) && !prefetchQueue.includes(e.photoId)) prefetchQueue.push(e.photoId); });
+    pump();
+  }
+  function pump() {
+    while (prefetching < 2 && prefetchQueue.length) {
+      const id = prefetchQueue.shift(); prefetching++;
+      photoSrc(id).catch(() => {}).finally(() => { prefetching--; pump(); });
+    }
   }
   const hasPhoto = ent => !!(ent && (ent.thumbData || ent.photoData || ent.thumbId || ent.photoId));
   // 사진 img: 이미 있는 data 면 바로, 아니면 서버에서 받아서
@@ -284,17 +321,22 @@
     });
     return img;
   }
+  let viewerToken = 0;
   function openViewer(ent) {
     const v = $('#viewer'); const img = $('#viewerImg');
+    const token = ++viewerToken;
+    let gotFull = false;
     img.removeAttribute('src');
-    const d = ent.photoData || ent.thumbData;
-    if (d) img.src = d;
     v.hidden = false;
+    if (ent.photoData) { img.src = ent.photoData; return; }
+    // 1) 작은 사진을 먼저 크게 띄우고 (보통 이미 받아 둠) 2) 큰 사진이 오면 바꿔 끼움
+    if (ent.thumbData) img.src = ent.thumbData;
+    else if (ent.thumbId) photoSrc(ent.thumbId).then(s => { if (token === viewerToken && !gotFull) img.src = s; }).catch(() => {});
     const id = ent.photoId || ent.thumbId;
-    if (!ent.photoData && id) {
-      loading(true);
-      photoSrc(id).then(s => { img.src = s; }).catch(() => toast('사진을 불러오지 못했어요')).finally(() => loading(false));
-    }
+    if (!id) return;
+    loading(true);
+    photoSrc(id).then(s => { gotFull = true; if (token === viewerToken) img.src = s; })
+      .catch(() => toast('사진을 불러오지 못했어요')).finally(() => loading(false));
   }
   $('#viewer').addEventListener('click', () => { $('#viewer').hidden = true; });
 
@@ -465,6 +507,7 @@
     kids.forEach(k => { shown.add(k.no); grid.append(entryCard(k.name, day[k.no], () => openKid(k.no))); });
     Object.keys(day).filter(no => !shown.has(no))
       .forEach(no => grid.append(entryCard(day[no].name || kidName(no), day[no], () => openKid(no))));
+    prefetchFull(Object.values(day));
   }
   async function renderBoard() {
     drawCalendar(); drawBoardDay();
@@ -500,6 +543,7 @@
           ent.text ? el('div', { class: 'text' }, ent.text) : null,
           cardPhoto(ent))));
     });
+    prefetchFull(list);
   }
 
   // ---------- 설정 (구글 시트 연결) ----------
@@ -521,7 +565,7 @@
     try {
       const data = await api('init', { date: todayKey() });
       kids = data.kids; LS.set('kids', kids); LS.set('key', classKey);
-      dayCache[todayKey()] = Object.fromEntries(data.entries.map(e => [String(e.no), e]));
+      setDay(todayKey(), toMap(data.entries));
       toast(`연결됐어요! 친구 ${kids.length}명`);
       flush();
       show('home');
@@ -546,14 +590,15 @@
     try {
       const data = await api('init', { date: todayKey() });
       kids = data.kids; LS.set('kids', kids);
-      dayCache[todayKey()] = Object.fromEntries(data.entries.map(e => [String(e.no), e]));
-      if (!$('#home').hidden) drawHome();
-    } catch (e) { handleError(e); }
+      setDay(todayKey(), toMap(data.entries));
+      homeLoadFailed = false;
+      if (!$('#home').hidden) { drawHome(); renderStatus(); }
+    } catch (e) { homeLoadFailed = true; renderStatus(); handleError(e); }
   }
 
   // 첫 화면에 머무는 동안 1분마다 오늘 기록·날짜 갱신
   setInterval(() => { if (!$('#home').hidden) renderHome(true); }, 60 * 1000);
 
   if (!classKey || !API_URL) show('settings');
-  else { show('home'); refreshKids(); flush(); }
+  else { show('home', { refresh: false }); refreshKids(); flush(); }
 })();

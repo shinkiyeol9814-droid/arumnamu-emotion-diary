@@ -7,6 +7,7 @@
 import json
 import os
 import sys
+import time
 import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -14,7 +15,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'src')
 DB = os.path.join(ROOT, 'tools', 'dev-db.json')
 KEY = '0000'
-OLD_SERVER = '--old' in sys.argv  # 사진 기능 전 Code.gs 흉내 (사진 무시, 버전 없음)
+OLD_SERVER = '--old' in sys.argv
+SLOW = '--slow' in sys.argv  # 구글 Apps Script 처럼 응답마다 1.5초 지연  # 사진 기능 전 Code.gs 흉내 (사진 무시, 버전 없음)
 EMO = {f'e{i:02d}' for i in range(1, 31)}
 
 
@@ -56,6 +58,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         req = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        if SLOW:
+            time.sleep(1.5)
         self.reply(self.handle_api(req))
 
     def handle_api(self, req):
