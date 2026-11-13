@@ -25,6 +25,7 @@ AI 코딩 에이전트(Claude Code 등)와 사람이 **어느 PC에서든** 이�
 ```
 src/                    ← GitHub Pages 로 배포되는 웹 앱 (빌드 없음, 순수 HTML/CSS/JS)
   index.html            화면(home, pick, write, done, board, kid, settings)을 <section> 으로 전환
+                        home 제목은 "오늘의 감정을 골라보세요", pick 제목은 "{이름}, 지금 기분이 어때요?"
                         settings 는 메뉴에 없음: 로고(.brand) 2.5초 안에 5번 클릭 → 관리자 화면 (아이들에게 숨김)
   app.js                전체 로직 (IIFE 하나, 프레임워크 없음)
   style.css             디자인 (Jua/Gaegu 폰트, 노란 책 테마, ≤560px 휴대폰 대응)
@@ -42,11 +43,18 @@ private/                (gitignore) 실명 명단 등 비공개 파일
 - 브라우저는 `POST {API_URL}`로 요청합니다. 본문은 JSON `{ key, action, ... }`입니다.
   - **`Content-Type: text/plain`** 이어야 합니다. 그래야 CORS 사전요청이 생기지 않고 Apps Script가 받습니다. 바꾸지 마세요.
   - 비밀번호는 URL에 넣지 않고 본문에만 넣습니다.
-- action 목록: `init`(명단 + 오늘 기록), `day`(date), `kid`(no), `month`('YYYY-MM' → 날짜별 인원), `save`(entries[])
+- action 목록: `init`(명단 + 오늘 기록), `day`(date), `kid`(no), `month`('YYYY-MM' → 날짜별 인원), `save`(entries[] → items[{date,no,photoId,thumbId}]), `photo`(id → data URL)
 - 시트 구성:
   - `친구목록`: `번호 | 이름`
-  - `기록`: `날짜 | 번호 | 이름 | 감정 | 날씨 | 이유 | 저장시각 | 감정ID | 날씨ID`
+  - `기록`: `날짜 | 번호 | 이름 | 감정 | 날씨 | 이유 | 저장시각 | 감정ID | 날씨ID | 사진ID | 썸네일ID`
   - 같은 (날짜, 번호)는 덮어쓰기(upsert)합니다. 날짜, 번호, 시각은 글자 형식으로 저장합니다.
+- **사진**:
+  - 브라우저가 canvas로 줄여서 보냅니다. 원본은 긴 변 1280px, 썸네일은 360px이고 둘 다 JPEG data URL입니다.
+  - Apps Script가 드라이브의 비공개 폴더(`PHOTO_FOLDER_ID` 스크립트 속성)에 저장하고, 시트에는 파일 ID만 둡니다.
+  - 저장할 때 `photoData`/`thumbData`가 있으면 새 사진으로 바꾸고 예전 파일은 휴지통으로 보냅니다. `photoRemove`면 사진을 뺍니다. 둘 다 없으면 그대로 둡니다.
+  - `photo` action은 **시트 기록에 있는 ID만** 꺼내 줍니다. 다른 드라이브 파일을 읽을 수 없게 막은 것이니 이 검사를 빼지 마세요.
+  - 사진에 공유 링크를 만들지 않습니다(아이 사진).
+  - 개발 서버는 `tools/dev-photos/`(gitignore)를 씁니다.
 - 아이는 **번호**로 식별합니다. 이름은 화면 표시용입니다.
 - 브라우저 localStorage(`arum.*`) 항목:
   - `key`: 반 비밀번호

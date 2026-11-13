@@ -5,3 +5,4 @@ tools/contact-sheet.png
 .claude/settings.local.json
 tools/dev-db.json
 private/
+tools/dev-photos/

@@ -25,7 +25,7 @@
   // ---------- 노트북에 보관하는 것 (반 비밀번호, 명단 캐시, 못 보낸 기록) ----------
   const LS = {
     get(k, d) { try { const v = localStorage.getItem('arum.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem('arum.' + k, JSON.stringify(v)); } catch (e) { /* 무시 */ } },
+    set(k, v) { try { localStorage.setItem('arum.' + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
     del(k) { try { localStorage.removeItem('arum.' + k); } catch (e) { /* 무시 */ } },
   };
   const isLocalDev = ['localhost', '127.0.0.1'].includes(location.hostname);
@@ -134,10 +134,15 @@
     flushing = true;
     try {
       const batch = pending.slice();
-      await api('save', { entries: batch });
+      const res = await api('save', { entries: batch });
       pending = pending.filter(p => !batch.includes(p));
       LS.set('pending', pending);
-      batch.forEach(p => { (dayCache[p.date] ||= {})[p.no] = Object.assign({}, p); });
+      batch.forEach(p => {
+        const done = (res.items || []).find(x => x.date === p.date && String(x.no) === String(p.no)) || {};
+        const ent = Object.assign({}, p, { photoId: done.photoId || null, thumbId: done.thumbId || null });
+        delete ent.photoData; delete ent.photoRemove;
+        (dayCache[p.date] ||= {})[p.no] = ent; // thumbData 는 화면 표시용으로 남겨 둠
+      });
     } catch (e) { handleError(e); }
     finally { flushing = false; renderStatus(); }
   }
@@ -179,7 +184,11 @@
 
   function startKid(no) {
     const ent = mergedDay(todayKey())[no];
-    current = { no, emotion: ent?.emotion || null, weather: ent?.weather || null, text: ent?.text || '' };
+    current = {
+      no, emotion: ent?.emotion || null, weather: ent?.weather || null, text: ent?.text || '',
+      photoId: ent?.photoId || null, thumbId: ent?.thumbId || null,
+      photoData: ent?.photoData || null, thumbData: ent?.thumbData || null, photoRemove: false,
+    };
     renderPick();
     show('pick');
   }
@@ -215,8 +224,88 @@
         },
       }, x.icon));
     });
+    renderPhoto();
     setTimeout(() => $('#reason').focus(), 50);
   }
+
+  // ---------- 사진 ----------
+  const photoCache = new Map(); // id -> Promise<dataURL>
+  function photoSrc(id) {
+    if (!photoCache.has(id)) {
+      photoCache.set(id, api('photo', { id }).then(r => r.data).catch(e => { photoCache.delete(id); throw e; }));
+    }
+    return photoCache.get(id);
+  }
+  const hasPhoto = ent => !!(ent && (ent.thumbData || ent.photoData || ent.thumbId || ent.photoId));
+  // 사진 img: 이미 있는 data 면 바로, 아니면 서버에서 받아서
+  function photoImg(ent, cls) {
+    if (!hasPhoto(ent)) return null;
+    const img = el('img', { class: cls, alt: '사진' });
+    const data = ent.thumbData || ent.photoData;
+    const id = ent.thumbId || ent.photoId;
+    if (data) img.src = data;
+    else photoSrc(id).then(src => { img.src = src; }).catch(() => img.remove());
+    return img;
+  }
+  function openViewer(ent) {
+    const v = $('#viewer'); const img = $('#viewerImg');
+    img.removeAttribute('src');
+    const d = ent.photoData || ent.thumbData;
+    if (d) img.src = d;
+    v.hidden = false;
+    const id = ent.photoId || ent.thumbId;
+    if (!ent.photoData && id) {
+      loading(true);
+      photoSrc(id).then(s => { img.src = s; }).catch(() => toast('사진을 불러오지 못했어요')).finally(() => loading(false));
+    }
+  }
+  $('#viewer').addEventListener('click', () => { $('#viewer').hidden = true; });
+
+  function renderPhoto() {
+    const box = $('#photoPreview'); const img = $('#photoImg');
+    const on = hasPhoto(current) && !current.photoRemove;
+    box.hidden = !on;
+    $('.photo-btn').firstChild.textContent = on ? '📷 사진 바꾸기' : '📷 사진 올리기';
+    img.removeAttribute('src');
+    if (!on) return;
+    if (current.thumbData) img.src = current.thumbData;
+    else photoSrc(current.thumbId || current.photoId).then(s => { img.src = s; }).catch(() => {});
+  }
+
+  // 사진 줄이기 (긴 변 max px, JPEG)
+  async function shrink(file, max, quality) {
+    let src;
+    try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+    catch (e) {
+      src = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = URL.createObjectURL(file); });
+    }
+    const w0 = src.width, h0 = src.height, k = Math.min(1, max / Math.max(w0, h0));
+    const c = document.createElement('canvas');
+    c.width = Math.round(w0 * k); c.height = Math.round(h0 * k);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(src, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', quality);
+  }
+  $('#photoInput').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    if (!f.type.startsWith('image/')) { toast('사진 파일만 올릴 수 있어요'); return; }
+    loading(true);
+    try {
+      current.photoData = await shrink(f, 1280, 0.8);
+      current.thumbData = await shrink(f, 360, 0.75);
+      current.photoRemove = false;
+      renderPhoto();
+    } catch (err) { toast('사진을 읽지 못했어요'); }
+    finally { loading(false); }
+  });
+  $('#photoImg').addEventListener('click', () => openViewer(current));
+  $('#photoDel').addEventListener('click', () => {
+    current.photoData = null; current.thumbData = null;
+    if (current.photoId || current.thumbId) current.photoRemove = true;
+    renderPhoto();
+  });
+
   $('#reason').addEventListener('input', e => { current.text = e.target.value; });
   $('#changeEmotion').addEventListener('click', () => { renderPick(); show('pick'); });
   $('#backToPick').addEventListener('click', () => { renderPick(); show('pick'); });
@@ -227,10 +316,14 @@
       emotion: current.emotion, weather: current.weather,
       text: ($('#reason').value || '').trim(), at: nowStamp(),
     };
+    if (current.photoData) { entry.photoData = current.photoData; entry.thumbData = current.thumbData; }
+    else if (current.photoRemove) entry.photoRemove = true;
+    else if (current.photoId) { entry.photoId = current.photoId; entry.thumbId = current.thumbId; }
     // 먼저 노트북에 보관 → 바로 완료 화면 → 뒤에서 시트로 올림
     pending = pending.filter(p => !(p.date === entry.date && p.no === entry.no));
     pending.push(entry);
-    LS.set('pending', pending);
+    // 사진이 커서 노트북에 임시 보관을 못 하면, 바로 올리기만 시도함
+    if (!LS.set('pending', pending)) console.warn('pending 보관 실패(용량)');
     $('#doneImg').src = imgOf(entry.emotion);
     $('#doneName').textContent = kidName(entry.no);
     $('#doneNote').textContent = '저장하는 중…';
@@ -252,6 +345,12 @@
     });
   }
 
+  function cardPhoto(ent) {
+    const img = photoImg(ent, 'card-photo');
+    if (img) img.addEventListener('click', ev => { ev.stopPropagation(); openViewer(ent); });
+    return img;
+  }
+
   function entryCard(name, ent, onclick) {
     if (!ent) {
       return el('button', { class: 'card empty', onclick },
@@ -267,6 +366,7 @@
           el('div', { class: 'name' }, name),
           el('div', { class: 'emo-label' }, (EMO[ent.emotion]?.name || '') + (w ? '  ' + w.icon : '')))),
       ent.text ? el('div', { class: 'text' }, ent.text) : null,
+      cardPhoto(ent),
       el('div', { class: 'meta' }, (t ? `${t}에 씀` : '') + (ent.pending ? ' · 📡 올리는 중' : '')));
   }
 
@@ -360,7 +460,8 @@
         el('div', {},
           el('div', { class: 'meta' }, prettyDate(ent.date) + (w ? '  ' + w.icon : '')),
           el('div', { class: 'name emo-label' }, EMO[ent.emotion]?.name || ''),
-          ent.text ? el('div', { class: 'text' }, ent.text) : null)));
+          ent.text ? el('div', { class: 'text' }, ent.text) : null,
+          cardPhoto(ent))));
     });
   }
 

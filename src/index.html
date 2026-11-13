@@ -25,15 +25,15 @@
 <main>
   <!-- 1. 친구 고르기 -->
   <section id="home" class="screen">
-    <h1 class="title">누가 일기를 쓸까요?</h1>
-    <p class="sub">내 이름을 눌러 주세요 <span id="doneCount"></span></p>
+    <h1 class="title rainbow">오늘의 감정을 골라보세요</h1>
+    <p class="sub">먼저 내 이름을 눌러 주세요 <span id="doneCount"></span></p>
     <p class="status" id="syncStatus" hidden></p>
     <div id="kidGrid" class="kid-grid"></div>
   </section>
 
   <!-- 2. 감정 고르기 -->
   <section id="pick" class="screen" hidden>
-    <h1 class="title rainbow"><span id="pickName"></span>, 오늘의 감정을 골라보세요</h1>
+    <h1 class="title rainbow"><span id="pickName"></span>, 지금 기분이 어때요?</h1>
     <div id="emotionGrid" class="emotion-grid"></div>
     <div class="actions"><button class="btn ghost" data-go="home">← 뒤로</button></div>
   </section>
@@ -52,6 +52,13 @@
         <div class="who"><b id="writeName"></b>의 감정일기 · <span id="writeDate"></span></div>
         <label class="q" for="reason">왜 그런 기분이 들었나요?</label>
         <textarea id="reason" maxlength="400" placeholder="여기에 써 보세요. (선생님이 대신 써 주셔도 좋아요)"></textarea>
+        <div class="photo-row">
+          <label class="btn small photo-btn">📷 사진 올리기<input type="file" id="photoInput" accept="image/*" hidden></label>
+          <div id="photoPreview" class="photo-preview" hidden>
+            <img id="photoImg" alt="올린 사진">
+            <button type="button" class="photo-del" id="photoDel" aria-label="사진 빼기">✕</button>
+          </div>
+        </div>
         <div class="weather-row">
           <span>오늘 날씨</span>
           <div id="weather" class="weather"></div>
@@ -110,6 +117,7 @@
   </section>
 </main>
 
+<div id="viewer" class="viewer" hidden><img id="viewerImg" alt=""></div>
 <div id="toast" class="toast" hidden></div>
 <div id="loading" class="loading" hidden>불러오는 중…</div>
 <script src="config.js?v=__VERSION__"></script>

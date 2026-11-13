@@ -6,16 +6,20 @@
  *
  * 시트 구성
  *   - 친구목록 : 번호 | 이름            ← 반 친구 명단 (여기서 고치면 앱에 반영)
- *   - 기록     : 날짜 | 번호 | 이름 | 감정 | 날씨 | 이유 | 저장시각 | 감정ID | 날씨ID
+ *   - 기록     : 날짜 | 번호 | 이름 | 감정 | 날씨 | 이유 | 저장시각 | 감정ID | 날씨ID | 사진ID | 썸네일ID
+ *   - 사진     : 구글 드라이브 '아름나무반 감정일기 사진' 폴더 (비공개, 시트 주인만 볼 수 있음)
  *
  * 보안
  *   - 스크립트 속성 CLASS_KEY (반 비밀번호) 가 맞아야만 읽기/쓰기가 됩니다.
  *   - 반 비밀번호는 코드나 GitHub 에 넣지 않습니다.
+ *   - 사진은 공유 링크 없이 비공개로 두고, 반 비밀번호가 맞을 때만 이 스크립트가 꺼내 줍니다.
  */
 
 const SHEET_KIDS = '친구목록';
 const SHEET_ENTRIES = '기록';
-const ENTRY_HEADERS = ['날짜', '번호', '이름', '감정', '날씨', '이유', '저장시각', '감정ID', '날씨ID'];
+const ENTRY_HEADERS = ['날짜', '번호', '이름', '감정', '날씨', '이유', '저장시각', '감정ID', '날씨ID', '사진ID', '썸네일ID'];
+const PHOTO_FOLDER_NAME = '아름나무반 감정일기 사진';
+const MAX_PHOTO_CHARS = 4 * 1024 * 1024; // data URL 길이 제한 (약 3MB 사진)
 
 const EMOTIONS = {
   e01: '졸려요', e02: '질투나요', e03: '뿌듯해요', e04: '화나요', e05: '기뻐요',
@@ -45,6 +49,10 @@ function setup() {
     entries.getRange('G:G').setNumberFormat('@');
     entries.setColumnWidth(6, 360);
   }
+  // 예전 버전 시트에도 새 열(사진ID, 썸네일ID) 머리글을 채움
+  entries.getRange(1, 1, 1, ENTRY_HEADERS.length).setValues([ENTRY_HEADERS]).setFontWeight('bold');
+  entries.getRange('J:K').setNumberFormat('@');
+  photoFolder(); // 사진 폴더 준비 (드라이브 권한 승인도 이때 받음)
   const props = PropertiesService.getScriptProperties();
   if (!props.getProperty('CLASS_KEY')) {
     const key = String(Math.floor(100000 + Math.random() * 900000));
@@ -70,7 +78,8 @@ function doPost(e) {
       case 'day': return json({ ok: true, entries: readDay(req.date) });
       case 'kid': return json({ ok: true, entries: readKid(req.no) });
       case 'month': return json({ ok: true, days: readMonth(req.month) });
-      case 'save': return json({ ok: true, saved: saveEntries(req.entries || [req.entry]) });
+      case 'save': { const items = saveEntries(req.entries || [req.entry]); return json({ ok: true, saved: items.length, items }); }
+      case 'photo': return json({ ok: true, data: readPhoto(req.id) });
       default: return json({ ok: false, error: 'unknown_action' });
     }
   } catch (err) {
@@ -105,7 +114,10 @@ function allEntryRows() {
 }
 
 function rowToEntry(r) {
-  return { date: r[0], no: String(r[1]), name: r[2], emotion: r[7], weather: r[8] || null, text: r[5], at: r[6] };
+  return {
+    date: r[0], no: String(r[1]), name: r[2], emotion: r[7], weather: r[8] || null, text: r[5], at: r[6],
+    photoId: r[9] || null, thumbId: r[10] || null,
+  };
 }
 
 function readDay(date) {
@@ -133,19 +145,32 @@ function saveEntries(list) {
     const s = sheet(SHEET_ENTRIES);
     const kids = readKids();
     const rows = allEntryRows();
-    let saved = 0;
+    const saved = [];
     list.forEach(ent => {
       if (!ent || !/^\d{4}-\d{2}-\d{2}$/.test(ent.date) || !EMOTIONS[ent.emotion]) return;
       const no = String(ent.no);
       const kid = kids.find(k => k.no === no);
+      const idx = rows.findIndex(r => r[0] === ent.date && String(r[1]) === no);
+      // 사진: 새 사진이면 저장(예전 사진은 휴지통), 빼기면 휴지통, 아니면 그대로
+      let photoId = idx >= 0 ? (rows[idx][9] || '') : '';
+      let thumbId = idx >= 0 ? (rows[idx][10] || '') : '';
+      if (ent.photoData || ent.photoRemove) {
+        trashFile(photoId);
+        if (thumbId !== photoId) trashFile(thumbId);
+        photoId = ''; thumbId = '';
+      }
+      if (ent.photoData) {
+        const base = `${ent.date}_${no}`;
+        photoId = savePhoto(ent.photoData, base + '.jpg');
+        thumbId = ent.thumbData ? savePhoto(ent.thumbData, base + '_thumb.jpg') : photoId;
+      }
       const row = [
         ent.date, no, kid ? kid.name : (ent.name || ''),
         EMOTIONS[ent.emotion], WEATHER[ent.weather] || '',
         String(ent.text || '').slice(0, 400),
         ent.at || Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss'),
-        ent.emotion, ent.weather || '',
+        ent.emotion, ent.weather || '', photoId, thumbId,
       ];
-      const idx = rows.findIndex(r => r[0] === ent.date && String(r[1]) === no);
       if (idx >= 0) {
         s.getRange(idx + 2, 1, 1, row.length).setValues([row]);
         rows[idx] = row.map(String);
@@ -153,10 +178,40 @@ function saveEntries(list) {
         s.appendRow(row);
         rows.push(row.map(String));
       }
-      saved++;
+      saved.push({ date: ent.date, no, photoId: photoId || null, thumbId: thumbId || null });
     });
     return saved;
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------- 사진 (구글 드라이브, 비공개) ----------
+function photoFolder() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('PHOTO_FOLDER_ID');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* 지워졌으면 새로 만듦 */ } }
+  const folder = DriveApp.createFolder(PHOTO_FOLDER_NAME);
+  props.setProperty('PHOTO_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function savePhoto(dataUrl, name) {
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(String(dataUrl || ''));
+  if (!m || dataUrl.length > MAX_PHOTO_CHARS) throw new Error('사진 형식이나 크기가 맞지 않아요');
+  const blob = Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name);
+  return photoFolder().createFile(blob).getId();
+}
+
+function trashFile(id) {
+  if (!id) return;
+  try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* 이미 없음 */ }
+}
+
+/** 기록에 들어 있는 사진만 꺼내 줌 (다른 드라이브 파일은 절대 안 됨) */
+function readPhoto(id) {
+  id = String(id || '');
+  if (!id || !allEntryRows().some(r => r[9] === id || r[10] === id)) throw new Error('사진을 찾을 수 없어요');
+  const blob = DriveApp.getFileById(id).getBlob();
+  return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
 }
