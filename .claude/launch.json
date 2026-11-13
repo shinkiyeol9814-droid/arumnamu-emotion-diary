@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "emotion-app", "runtimeExecutable": "python", "runtimeArgs": ["-m", "http.server", "8765", "-d", "src"], "port": 8765 }
+    { "name": "emotion-app", "runtimeExecutable": "python", "runtimeArgs": ["tools/dev_server.py", "8765"], "port": 8765 }
   ]
 }

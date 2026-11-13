@@ -19,7 +19,7 @@
   <nav>
     <button class="nav-btn" data-go="home">🏠 처음</button>
     <button class="nav-btn" data-go="board">🌳 모아보기</button>
-    <button class="nav-btn ghost" data-go="teacher">🔒 선생님</button>
+    <button class="nav-btn ghost" data-go="settings">⚙️ 설정</button>
   </nav>
 </header>
 
@@ -28,6 +28,7 @@
   <section id="home" class="screen">
     <h1 class="title">누가 일기를 쓸까요?</h1>
     <p class="sub">내 이름을 눌러 주세요 <span id="doneCount"></span></p>
+    <p class="status" id="syncStatus" hidden></p>
     <div id="kidGrid" class="kid-grid"></div>
   </section>
 
@@ -69,21 +70,15 @@
     <div class="done-card">
       <img id="doneImg" alt="">
       <h1 class="title">잘 했어요! <span id="doneName"></span></h1>
-      <p class="sub">일기가 저장되었어요. 다음 친구에게 넘겨 주세요 🌱</p>
+      <p class="sub" id="doneNote"></p>
       <button class="btn primary" data-go="home">다음 친구</button>
     </div>
   </section>
 
   <!-- 4. 모아보기 -->
   <section id="board" class="screen" hidden>
-    <div class="board-head">
-      <button class="btn small ghost" id="prevDay">◀</button>
-      <input type="date" id="boardDate">
-      <button class="btn small ghost" id="nextDay">▶</button>
-      <button class="btn small ghost" id="todayBtn">오늘</button>
-      <span class="spacer"></span>
-      <button class="btn small ghost" id="printBtn">🖨️ 인쇄</button>
-    </div>
+    <div id="calendar" class="calendar"></div>
+    <h2 class="board-title" id="boardTitle"></h2>
     <div id="tally" class="tally"></div>
     <div id="boardGrid" class="board-grid"></div>
   </section>
@@ -98,51 +93,26 @@
     <div id="kidHistory" class="history"></div>
   </section>
 
-  <!-- 5. 선생님 -->
-  <section id="teacher" class="screen" hidden>
-    <div id="lockBox" class="panel">
-      <h2>선생님 메뉴</h2>
-      <p>비밀번호를 입력하세요. (처음 비밀번호: 1234)</p>
-      <input type="password" id="pin" inputmode="numeric" maxlength="8">
-      <button class="btn primary" id="unlockBtn">열기</button>
-      <p class="err" id="pinErr"></p>
-    </div>
-    <div id="teacherBox" hidden>
-      <div class="panel">
-        <h2>친구 이름</h2>
-        <p>한 줄에 한 명씩 적어 주세요. (줄 순서 = 화면 순서) 실명 대신 별명을 써도 좋아요.</p>
-        <textarea id="kidNames" rows="12"></textarea>
-        <button class="btn primary" id="saveKids">이름 저장</button>
-        <p class="hint">이름을 지워도 그 친구의 지난 기록은 남아 있어요.</p>
-      </div>
-      <div class="panel">
-        <h2>백업 · 내보내기</h2>
-        <p>기록은 이 노트북의 브라우저 안에만 저장돼요. 가끔 백업 파일을 받아 두세요.</p>
-        <div class="row">
-          <button class="btn" id="exportJson">💾 백업 파일 받기</button>
-          <label class="btn">📂 백업 불러오기<input type="file" id="importJson" accept=".json" hidden></label>
-          <button class="btn" id="exportCsv">📊 엑셀용(CSV) 받기</button>
-        </div>
-      </div>
-      <div class="panel">
-        <h2>비밀번호 바꾸기</h2>
-        <div class="row">
-          <input type="password" id="newPin" inputmode="numeric" maxlength="8" placeholder="새 비밀번호">
-          <button class="btn" id="savePin">바꾸기</button>
-        </div>
-      </div>
-      <div class="panel danger">
-        <h2>기록 지우기</h2>
-        <div class="row">
-          <button class="btn" id="clearDay">모아보기에서 보던 날짜 기록 지우기</button>
-          <button class="btn" id="clearAll">모든 기록 지우기</button>
-        </div>
+  <!-- 연결 설정 -->
+  <section id="settings" class="screen" hidden>
+    <div class="panel narrow">
+      <h2>구글 시트 연결</h2>
+      <p>이 노트북에서 처음 한 번만 반 비밀번호를 입력하면 돼요.</p>
+      <input type="password" id="classKey" inputmode="numeric" autocomplete="off" placeholder="반 비밀번호">
+      <button class="btn primary" id="connectBtn">연결하기</button>
+      <p class="err" id="connectErr"></p>
+      <p class="hint" id="connectInfo"></p>
+      <div class="row">
+        <button class="btn small ghost" id="disconnectBtn">이 노트북 연결 해제</button>
+        <button class="btn small ghost" id="reloadBtn">🔄 새로 불러오기</button>
       </div>
     </div>
   </section>
 </main>
 
 <div id="toast" class="toast" hidden></div>
+<div id="loading" class="loading" hidden>불러오는 중…</div>
+<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

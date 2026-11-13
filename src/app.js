@@ -1,5 +1,5 @@
-// 아름나무반 감정일기 — 한 대의 노트북에서 여러 친구가 돌아가며 쓰는 감정일기
-// 기록은 이 브라우저의 localStorage 에만 저장됩니다 (인터넷으로 나가지 않음).
+// 아름나무반 감정일기 — 노트북 한 대로 친구들이 돌아가며 쓰는 감정일기
+// 기록은 구글 시트(앱스 스크립트)에 저장됩니다. 인터넷이 끊기면 노트북에 잠시 보관했다가 다시 올립니다.
 (function () {
   'use strict';
 
@@ -22,30 +22,33 @@
     { id: 'snow', icon: '❄️', name: '눈' },
   ];
 
-  const KEY = 'arumnamu-emotion-diary-v1';
-  const DEFAULT_KIDS = Array.from({ length: 23 }, (_, i) => `친구 ${i + 1}`);
+  // ---------- 노트북에 보관하는 것 (반 비밀번호, 명단 캐시, 못 보낸 기록) ----------
+  const LS = {
+    get(k, d) { try { const v = localStorage.getItem('arum.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem('arum.' + k, JSON.stringify(v)); } catch (e) { /* 무시 */ } },
+    del(k) { try { localStorage.removeItem('arum.' + k); } catch (e) { /* 무시 */ } },
+  };
+  const isLocalDev = ['localhost', '127.0.0.1'].includes(location.hostname);
+  const API_URL = isLocalDev ? '/api' : ((window.APP_CONFIG || {}).API_URL || '');
 
-  // ---------- 저장소 ----------
-  function load() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) {
-        const d = JSON.parse(raw);
-        d.kids ||= []; d.entries ||= {}; d.pin ||= '1234'; d.nextId ||= 1000;
-        return d;
-      }
-    } catch (e) { console.warn(e); }
-    return {
-      kids: DEFAULT_KIDS.map((name, i) => ({ id: 'k' + (i + 1), name })),
-      entries: {}, // { 'YYYY-MM-DD': { kidId: { emotion, weather, text, at } } }
-      pin: '1234',
-      nextId: 24,
-    };
-  }
-  let db = load();
-  function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(db)); return true; }
-    catch (e) { toast('저장하지 못했어요. 선생님께 알려 주세요.'); return false; }
+  let classKey = LS.get('key', '');
+  let kids = LS.get('kids', []);           // [{no, name}]
+  let pending = LS.get('pending', []);      // 아직 시트에 못 올린 기록
+  const dayCache = {};                      // date -> { no: entry }
+
+  // ---------- 서버 호출 ----------
+  async function api(action, body = {}) {
+    if (!API_URL) throw new Error('no_api');
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      // text/plain 이어야 앱스 스크립트가 CORS 사전요청 없이 받아요
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ key: classKey, action, ...body }),
+      redirect: 'follow',
+    });
+    const data = await res.json();
+    if (!data.ok) { const err = new Error(data.error || 'error'); err.code = data.error; throw err; }
+    return data;
   }
 
   // ---------- 날짜 ----------
@@ -53,82 +56,128 @@
   const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const todayKey = () => ymd(new Date());
   const DAYS = ['일', '월', '화', '수', '목', '금', '토'];
-  function prettyDate(key) {
-    const [y, m, d] = key.split('-').map(Number);
-    const dt = new Date(y, m - 1, d);
-    return `${m}월 ${d}일 ${DAYS[dt.getDay()]}요일`;
-  }
-  function shiftDate(key, n) {
-    const [y, m, d] = key.split('-').map(Number);
-    return ymd(new Date(y, m - 1, d + n));
-  }
+  const parse = key => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d); };
+  const prettyDate = key => { const dt = parse(key); return `${dt.getMonth() + 1}월 ${dt.getDate()}일 ${DAYS[dt.getDay()]}요일`; };
+  const nowStamp = () => { const d = new Date(); return `${ymd(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+  const timeOf = at => (String(at || '').match(/(\d{1,2}):(\d{2})/) || []).slice(1, 3).join(':');
 
-  // ---------- 화면 전환 ----------
+  // ---------- 화면 도우미 ----------
   const $ = s => document.querySelector(s);
-  const el = (tag, attrs = {}, ...kids) => {
+  const el = (tag, attrs = {}, ...children) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
       if (k === 'class') n.className = v;
       else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
       else n.setAttribute(k, v);
     }
-    for (const c of kids) if (c != null) n.append(c);
+    for (const c of children) if (c != null) n.append(c);
     return n;
   };
+  function toast(msg) {
+    const t = $('#toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 2600);
+  }
+  let loadingCount = 0;
+  function loading(on) { loadingCount = Math.max(0, loadingCount + (on ? 1 : -1)); $('#loading').hidden = loadingCount === 0; }
 
-  let current = { kidId: null, emotion: null, weather: null };
+  let current = { no: null, emotion: null, weather: null, text: '' };
   let boardDate = todayKey();
-  let teacherOpen = false;
+  let calMonth = todayKey().slice(0, 7);
 
   function show(id) {
-    if (id === 'teacher' && !teacherOpen) { $('#pin').value = ''; $('#pinErr').textContent = ''; }
     document.querySelectorAll('.screen').forEach(s => { s.hidden = s.id !== id; });
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.go === id));
-    if (id === 'home') renderHome();
-    if (id === 'board') renderBoard();
-    if (id === 'teacher') renderTeacher();
     window.scrollTo(0, 0);
+    if (id === 'home') renderHome(true);
+    if (id === 'board') renderBoard();
+    if (id === 'settings') renderSettings();
   }
   document.addEventListener('click', e => {
     const go = e.target.closest('[data-go]');
-    if (go) { show(go.dataset.go); }
+    if (go) show(go.dataset.go);
   });
 
-  function toast(msg) {
-    const t = $('#toast'); t.textContent = msg; t.hidden = false;
-    clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 2200);
+  const kidName = no => (kids.find(k => k.no === String(no)) || {}).name || `${no}번`;
+
+  // 하루 기록 = 시트 기록 + 아직 못 보낸 기록
+  function mergedDay(date) {
+    const map = Object.assign({}, dayCache[date] || {});
+    pending.filter(p => p.date === date).forEach(p => { map[p.no] = Object.assign({}, p, { pending: true }); });
+    return map;
+  }
+  async function loadDay(date) {
+    try {
+      const { entries } = await api('day', { date });
+      dayCache[date] = Object.fromEntries(entries.map(e => [String(e.no), e]));
+      return true;
+    } catch (e) { handleError(e); return false; }
   }
 
-  const kidName = id => (db.kids.find(k => k.id === id) || {}).name || '(지난 친구)';
+  function handleError(e) {
+    if (e.code === 'bad_key') { toast('반 비밀번호가 맞지 않아요. 설정에서 다시 연결해 주세요.'); show('settings'); }
+    else if (e.message !== 'no_api') console.warn(e);
+  }
+
+  // ---------- 못 보낸 기록 올리기 ----------
+  let flushing = false;
+  async function flush() {
+    if (flushing || !pending.length || !classKey || !API_URL) return renderStatus();
+    flushing = true;
+    try {
+      const batch = pending.slice();
+      await api('save', { entries: batch });
+      pending = pending.filter(p => !batch.includes(p));
+      LS.set('pending', pending);
+      batch.forEach(p => { (dayCache[p.date] ||= {})[p.no] = Object.assign({}, p); });
+    } catch (e) { handleError(e); }
+    finally { flushing = false; renderStatus(); }
+  }
+  window.addEventListener('online', flush);
+  setInterval(flush, 30 * 1000);
+
+  function renderStatus() {
+    const s = $('#syncStatus');
+    if (!classKey || !API_URL) { s.hidden = false; s.textContent = '⚙️ 아직 구글 시트에 연결되지 않았어요. 선생님이 "설정"에서 연결해 주세요.'; return; }
+    if (pending.length) { s.hidden = false; s.textContent = `📡 인터넷 연결을 기다리는 기록 ${pending.length}개 · 연결되면 자동으로 올라가요`; return; }
+    s.hidden = true;
+  }
 
   // ---------- 1. 친구 고르기 ----------
-  function renderHome() {
+  async function renderHome(refresh) {
     $('#todayLabel').textContent = prettyDate(todayKey());
-    const today = db.entries[todayKey()] || {};
+    renderStatus();
+    drawHome();
+    if (refresh && classKey && API_URL) {
+      if (await loadDay(todayKey())) drawHome();
+    }
+  }
+  function drawHome() {
+    const today = mergedDay(todayKey());
     const grid = $('#kidGrid'); grid.innerHTML = '';
     let done = 0;
-    db.kids.forEach((k, i) => {
-      const ent = today[k.id];
+    if (!kids.length) grid.append(el('p', { class: 'sub' }, '친구 명단을 불러오지 못했어요. 설정을 확인해 주세요.'));
+    kids.forEach(k => {
+      const ent = today[k.no];
       if (ent) done++;
-      grid.append(el('button', { class: 'kid' + (ent ? ' done' : ''), onclick: () => startKid(k.id) },
-        el('span', { class: 'num' }, String(i + 1)),
+      grid.append(el('button', { class: 'kid' + (ent ? ' done' : ''), onclick: () => startKid(k.no) },
+        el('span', { class: 'num' }, k.no),
         ent ? el('img', { src: imgOf(ent.emotion), alt: EMO[ent.emotion]?.name || '' })
-            : el('span', { class: 'face' }, '🙂'),
+          : el('span', { class: 'face' }, '🙂'),
         el('span', {}, k.name)));
     });
-    $('#doneCount').textContent = `· 오늘 ${done} / ${db.kids.length}명 썼어요`;
+    $('#doneCount').textContent = kids.length ? `· 오늘 ${done} / ${kids.length}명 썼어요` : '';
   }
 
-  function startKid(kidId) {
-    const ent = (db.entries[todayKey()] || {})[kidId];
-    current = { kidId, emotion: ent?.emotion || null, weather: ent?.weather || null, text: ent?.text || '' };
+  function startKid(no) {
+    const ent = mergedDay(todayKey())[no];
+    current = { no, emotion: ent?.emotion || null, weather: ent?.weather || null, text: ent?.text || '' };
     renderPick();
     show('pick');
   }
 
   // ---------- 2. 감정 고르기 ----------
   function renderPick() {
-    $('#pickName').textContent = kidName(current.kidId);
+    $('#pickName').textContent = kidName(current.no);
     const grid = $('#emotionGrid'); grid.innerHTML = '';
     EMOTIONS.forEach(e => {
       grid.append(el('button', {
@@ -144,60 +193,64 @@
     $('#writeEmotionImg').src = imgOf(e.id);
     $('#writeEmotionImg').alt = e.name;
     $('#writeEmotionName').textContent = e.name;
-    $('#writeName').textContent = kidName(current.kidId);
+    $('#writeName').textContent = kidName(current.no);
     $('#writeDate').textContent = prettyDate(todayKey());
     $('#reason').value = current.text || '';
     const w = $('#weather'); w.innerHTML = '';
     WEATHER.forEach(x => {
       w.append(el('button', {
-        class: current.weather === x.id ? 'on' : '', title: x.name, 'aria-label': x.name,
-        onclick: () => { current.weather = current.weather === x.id ? null : x.id; renderWeatherOnly(); },
-        'data-w': x.id,
+        class: current.weather === x.id ? 'on' : '', title: x.name, 'aria-label': x.name, 'data-w': x.id,
+        onclick: () => {
+          current.weather = current.weather === x.id ? null : x.id;
+          w.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.w === current.weather));
+        },
       }, x.icon));
     });
     setTimeout(() => $('#reason').focus(), 50);
-  }
-  function renderWeatherOnly() {
-    document.querySelectorAll('#weather button').forEach(b => b.classList.toggle('on', b.dataset.w === current.weather));
   }
   $('#reason').addEventListener('input', e => { current.text = e.target.value; });
   $('#changeEmotion').addEventListener('click', () => { renderPick(); show('pick'); });
   $('#backToPick').addEventListener('click', () => { renderPick(); show('pick'); });
 
-  $('#saveBtn').addEventListener('click', () => {
-    const day = todayKey();
-    db.entries[day] ||= {};
-    db.entries[day][current.kidId] = {
-      emotion: current.emotion,
-      weather: current.weather,
-      text: ($('#reason').value || '').trim(),
-      at: new Date().toISOString(),
+  $('#saveBtn').addEventListener('click', async () => {
+    const entry = {
+      date: todayKey(), no: current.no, name: kidName(current.no),
+      emotion: current.emotion, weather: current.weather,
+      text: ($('#reason').value || '').trim(), at: nowStamp(),
     };
-    if (!save()) return;
-    $('#doneImg').src = imgOf(current.emotion);
-    $('#doneName').textContent = kidName(current.kidId);
+    // 먼저 노트북에 보관 → 바로 완료 화면 → 뒤에서 시트로 올림
+    pending = pending.filter(p => !(p.date === entry.date && p.no === entry.no));
+    pending.push(entry);
+    LS.set('pending', pending);
+    $('#doneImg').src = imgOf(entry.emotion);
+    $('#doneName').textContent = kidName(entry.no);
+    $('#doneNote').textContent = '저장하는 중…';
     show('done');
+    await flush();
+    $('#doneNote').textContent = pending.includes(entry)
+      ? '인터넷이 연결되면 자동으로 저장돼요. 다음 친구에게 넘겨 주세요 🌱'
+      : '일기가 저장되었어요. 다음 친구에게 넘겨 주세요 🌱';
   });
 
-  // ---------- 4. 모아보기 ----------
+  // ---------- 4. 모아보기 (달력 + 하루 기록) ----------
   function tallyChips(list, container) {
     const counts = {};
-    list.forEach(ent => { counts[ent.emotion] = (counts[ent.emotion] || 0) + 1; });
+    list.forEach(ent => { if (EMO[ent.emotion]) counts[ent.emotion] = (counts[ent.emotion] || 0) + 1; });
     container.innerHTML = '';
     Object.entries(counts).sort((a, b) => b[1] - a[1]).forEach(([id, n]) => {
       container.append(el('span', { class: 'chip' },
-        el('img', { src: imgOf(id), alt: '' }), EMO[id]?.name || id, ' ', el('b', {}, n + '명')));
+        el('img', { src: imgOf(id), alt: '' }), EMO[id].name, ' ', el('b', {}, n + '명')));
     });
   }
 
   function entryCard(name, ent, onclick) {
-    const w = WEATHER.find(x => x.id === ent?.weather);
     if (!ent) {
       return el('button', { class: 'card empty', onclick },
         el('div', { class: 'head' }, el('span', { class: 'name' }, name)),
         el('div', { class: 'meta' }, '아직 안 썼어요'));
     }
-    const time = new Date(ent.at);
+    const w = WEATHER.find(x => x.id === ent.weather);
+    const t = timeOf(ent.at);
     return el('button', { class: 'card', onclick },
       el('div', { class: 'head' },
         el('img', { src: imgOf(ent.emotion), alt: '' }),
@@ -205,131 +258,149 @@
           el('div', { class: 'name' }, name),
           el('div', { class: 'emo-label' }, (EMO[ent.emotion]?.name || '') + (w ? '  ' + w.icon : '')))),
       ent.text ? el('div', { class: 'text' }, ent.text) : null,
-      el('div', { class: 'meta' }, `${pad(time.getHours())}:${pad(time.getMinutes())}에 씀`));
+      el('div', { class: 'meta' }, (t ? `${t}에 씀` : '') + (ent.pending ? ' · 📡 올리는 중' : '')));
   }
 
-  function renderBoard() {
-    $('#boardDate').value = boardDate;
-    const day = db.entries[boardDate] || {};
+  const monthCounts = {}; // 'YYYY-MM' -> { date: n }
+  async function loadMonth(month) {
+    try { monthCounts[month] = (await api('month', { month })).days; } catch (e) { handleError(e); }
+  }
+  function drawCalendar() {
+    const [y, m] = calMonth.split('-').map(Number);
+    const first = new Date(y, m - 1, 1);
+    const daysIn = new Date(y, m, 0).getDate();
+    const counts = monthCounts[calMonth] || {};
+    const cal = $('#calendar'); cal.innerHTML = '';
+    const head = el('div', { class: 'cal-head' },
+      el('button', { class: 'btn small ghost', onclick: () => moveMonth(-1) }, '◀'),
+      el('b', {}, `${y}년 ${m}월`),
+      el('button', { class: 'btn small ghost', onclick: () => moveMonth(1) }, '▶'),
+      el('span', { class: 'spacer' }),
+      el('button', { class: 'btn small ghost', onclick: () => pickDate(todayKey()) }, '오늘'),
+      el('button', { class: 'btn small ghost', onclick: () => window.print() }, '🖨️ 인쇄'));
+    const grid = el('div', { class: 'cal-grid' });
+    DAYS.forEach((d, i) => grid.append(el('div', { class: 'cal-dow' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') }, d)));
+    for (let i = 0; i < first.getDay(); i++) grid.append(el('div'));
+    for (let d = 1; d <= daysIn; d++) {
+      const key = `${calMonth}-${pad(d)}`;
+      const n = counts[key] || 0;
+      const cls = ['cal-day'];
+      if (key === boardDate) cls.push('sel');
+      if (key === todayKey()) cls.push('today');
+      if (n) cls.push('has');
+      grid.append(el('button', { class: cls.join(' '), onclick: () => pickDate(key) },
+        el('span', {}, String(d)), n ? el('small', {}, `${n}명`) : null));
+    }
+    cal.append(head, grid);
+  }
+  async function moveMonth(n) {
+    const [y, m] = calMonth.split('-').map(Number);
+    const d = new Date(y, m - 1 + n, 1);
+    calMonth = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+    drawCalendar();
+    loading(true); await loadMonth(calMonth); loading(false);
+    drawCalendar();
+  }
+  async function pickDate(key) {
+    boardDate = key;
+    calMonth = key.slice(0, 7);
+    drawCalendar(); drawBoardDay();
+    loading(true);
+    await Promise.all([loadDay(key), monthCounts[calMonth] ? null : loadMonth(calMonth)]);
+    loading(false);
+    drawCalendar(); drawBoardDay();
+  }
+  function drawBoardDay() {
+    $('#boardTitle').textContent = prettyDate(boardDate);
+    const day = mergedDay(boardDate);
     tallyChips(Object.values(day), $('#tally'));
     const grid = $('#boardGrid'); grid.innerHTML = '';
     const shown = new Set();
-    db.kids.forEach(k => {
-      shown.add(k.id);
-      grid.append(entryCard(k.name, day[k.id], () => openKid(k.id)));
-    });
-    // 이름이 지워진 친구의 기록도 보여주기
-    Object.keys(day).filter(id => !shown.has(id)).forEach(id => grid.append(entryCard(kidName(id), day[id], () => openKid(id))));
+    kids.forEach(k => { shown.add(k.no); grid.append(entryCard(k.name, day[k.no], () => openKid(k.no))); });
+    Object.keys(day).filter(no => !shown.has(no))
+      .forEach(no => grid.append(entryCard(day[no].name || kidName(no), day[no], () => openKid(no))));
   }
-  $('#boardDate').addEventListener('change', e => { if (e.target.value) { boardDate = e.target.value; renderBoard(); } });
-  $('#prevDay').addEventListener('click', () => { boardDate = shiftDate(boardDate, -1); renderBoard(); });
-  $('#nextDay').addEventListener('click', () => { boardDate = shiftDate(boardDate, 1); renderBoard(); });
-  $('#todayBtn').addEventListener('click', () => { boardDate = todayKey(); renderBoard(); });
-  $('#printBtn').addEventListener('click', () => window.print());
+  async function renderBoard() {
+    drawCalendar(); drawBoardDay();
+    loading(true);
+    await Promise.all([loadDay(boardDate), loadMonth(calMonth)]);
+    loading(false);
+    drawCalendar(); drawBoardDay();
+  }
 
-  function openKid(kidId) {
-    $('#kidTitle').textContent = `${kidName(kidId)}의 감정일기`;
-    const days = Object.keys(db.entries).filter(d => db.entries[d][kidId]).sort().reverse();
-    const list = days.map(d => ({ d, ...db.entries[d][kidId] }));
+  async function openKid(no) {
+    $('#kidTitle').textContent = `${kidName(no)}의 감정일기`;
+    $('#kidTally').innerHTML = ''; $('#kidHistory').innerHTML = '';
+    document.querySelectorAll('.screen').forEach(s => { s.hidden = s.id !== 'kid'; });
+    window.scrollTo(0, 0);
+    loading(true);
+    let list = [];
+    try { list = (await api('kid', { no })).entries; } catch (e) { handleError(e); }
+    loading(false);
+    pending.filter(p => p.no === no).forEach(p => {
+      list = list.filter(x => x.date !== p.date); list.push(Object.assign({ pending: true }, p));
+    });
+    list.sort((a, b) => (a.date < b.date ? 1 : -1));
     tallyChips(list, $('#kidTally'));
-    const box = $('#kidHistory'); box.innerHTML = '';
+    const box = $('#kidHistory');
     if (!list.length) box.append(el('p', { class: 'sub' }, '아직 기록이 없어요.'));
     list.forEach(ent => {
       const w = WEATHER.find(x => x.id === ent.weather);
       box.append(el('div', { class: 'card' },
         el('img', { src: imgOf(ent.emotion), alt: '' }),
         el('div', {},
-          el('div', { class: 'meta' }, prettyDate(ent.d) + (w ? '  ' + w.icon : '')),
+          el('div', { class: 'meta' }, prettyDate(ent.date) + (w ? '  ' + w.icon : '')),
           el('div', { class: 'name emo-label' }, EMO[ent.emotion]?.name || ''),
           ent.text ? el('div', { class: 'text' }, ent.text) : null)));
     });
-    document.querySelectorAll('.screen').forEach(s => { s.hidden = s.id !== 'kid'; });
-    window.scrollTo(0, 0);
   }
 
-  // ---------- 5. 선생님 ----------
-  function renderTeacher() {
-    $('#lockBox').hidden = teacherOpen;
-    $('#teacherBox').hidden = !teacherOpen;
-    if (teacherOpen) $('#kidNames').value = db.kids.map(k => k.name).join('\n');
-    else setTimeout(() => $('#pin').focus(), 50);
+  // ---------- 설정 (구글 시트 연결) ----------
+  function renderSettings() {
+    $('#classKey').value = '';
+    $('#connectErr').textContent = '';
+    $('#connectInfo').textContent = !API_URL
+      ? '⚠️ config.js 에 앱스 스크립트 주소(API_URL)가 아직 없어요. SETUP.md 를 보세요.'
+      : classKey ? `✅ 연결됨 · 친구 ${kids.length}명` : '아직 연결되지 않았어요.';
   }
-  function unlock() {
-    if ($('#pin').value === db.pin) { teacherOpen = true; renderTeacher(); }
-    else $('#pinErr').textContent = '비밀번호가 달라요.';
-  }
-  $('#unlockBtn').addEventListener('click', unlock);
-  $('#pin').addEventListener('keydown', e => { if (e.key === 'Enter') unlock(); });
-  // 선생님 메뉴를 벗어나면 다시 잠금
-  document.addEventListener('click', e => {
-    const go = e.target.closest('[data-go]');
-    if (go && go.dataset.go !== 'teacher') teacherOpen = false;
-  }, true);
-
-  $('#saveKids').addEventListener('click', () => {
-    const names = $('#kidNames').value.split('\n').map(s => s.trim()).filter(Boolean);
-    if (!names.length) { toast('이름을 한 명 이상 적어 주세요.'); return; }
-    // 같은 자리(순서)의 친구는 id를 유지해서 기록이 이어지게 함
-    const old = db.kids;
-    db.kids = names.map((name, i) => {
-      const byName = old.find(k => k.name === name);
-      if (byName) return { id: byName.id, name };
-      if (old[i] && !names.includes(old[i].name)) return { id: old[i].id, name };
-      return { id: 'k' + (db.nextId++), name };
-    });
-    // 중복 id 방지
-    const seen = new Set();
-    db.kids.forEach(k => { if (seen.has(k.id)) k.id = 'k' + (db.nextId++); seen.add(k.id); });
-    save(); toast(`${db.kids.length}명 저장했어요`);
-  });
-
-  function download(filename, text, type) {
-    const blob = new Blob([text], { type });
-    const a = el('a', { href: URL.createObjectURL(blob), download: filename });
-    document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  }
-  $('#exportJson').addEventListener('click', () => {
-    download(`아름나무반-감정일기-백업-${todayKey()}.json`, JSON.stringify(db, null, 2), 'application/json');
-  });
-  $('#importJson').addEventListener('change', async e => {
-    const f = e.target.files[0]; if (!f) return;
+  async function connect() {
+    const key = $('#classKey').value.trim();
+    if (!key) return;
+    const prev = classKey; classKey = key;
+    loading(true);
     try {
-      const d = JSON.parse(await f.text());
-      if (!Array.isArray(d.kids) || typeof d.entries !== 'object') throw new Error('형식 오류');
-      if (!confirm('지금 기록을 백업 파일 내용으로 바꿀까요?')) return;
-      db = d; db.pin ||= '1234'; db.nextId ||= 1000; save(); toast('백업을 불러왔어요'); renderTeacher();
-    } catch (err) { toast('백업 파일을 읽지 못했어요'); }
-    e.target.value = '';
+      const data = await api('init', { date: todayKey() });
+      kids = data.kids; LS.set('kids', kids); LS.set('key', classKey);
+      dayCache[todayKey()] = Object.fromEntries(data.entries.map(e => [String(e.no), e]));
+      toast(`연결됐어요! 친구 ${kids.length}명`);
+      flush();
+      show('home');
+    } catch (e) {
+      classKey = prev;
+      $('#connectErr').textContent = e.code === 'bad_key' ? '반 비밀번호가 달라요.' : '연결하지 못했어요. 인터넷과 주소를 확인해 주세요.';
+    } finally { loading(false); }
+  }
+  $('#connectBtn').addEventListener('click', connect);
+  $('#classKey').addEventListener('keydown', e => { if (e.key === 'Enter') connect(); });
+  $('#disconnectBtn').addEventListener('click', () => {
+    if (pending.length && !confirm(`아직 올라가지 않은 기록 ${pending.length}개가 있어요. 그래도 연결을 해제할까요?`)) return;
+    classKey = ''; LS.del('key'); renderSettings(); renderStatus(); toast('연결을 해제했어요');
   });
-  $('#exportCsv').addEventListener('click', () => {
-    const q = s => '"' + String(s ?? '').replace(/"/g, '""') + '"';
-    const rows = [['날짜', '이름', '감정', '날씨', '이유', '쓴 시각'].map(q).join(',')];
-    Object.keys(db.entries).sort().forEach(d => {
-      Object.entries(db.entries[d]).forEach(([kid, ent]) => {
-        rows.push([d, kidName(kid), EMO[ent.emotion]?.name, WEATHER.find(w => w.id === ent.weather)?.name,
-          ent.text, new Date(ent.at).toLocaleTimeString('ko-KR')].map(q).join(','));
-      });
-    });
-    download(`아름나무반-감정일기-${todayKey()}.csv`, '﻿' + rows.join('\r\n'), 'text/csv');
-  });
-  $('#savePin').addEventListener('click', () => {
-    const p = $('#newPin').value.trim();
-    if (p.length < 4) { toast('4자리 이상으로 정해 주세요'); return; }
-    db.pin = p; save(); $('#newPin').value = ''; toast('비밀번호를 바꿨어요');
-  });
-  $('#clearDay').addEventListener('click', () => {
-    if (!db.entries[boardDate]) { toast(`${prettyDate(boardDate)} 기록이 없어요`); return; }
-    if (!confirm(`${prettyDate(boardDate)} 기록을 모두 지울까요? 되돌릴 수 없어요.`)) return;
-    delete db.entries[boardDate]; save(); toast('지웠어요');
-  });
-  $('#clearAll').addEventListener('click', () => {
-    if (!confirm('모든 날짜의 기록을 지울까요? 되돌릴 수 없어요. (먼저 백업을 받아 두세요)')) return;
-    db.entries = {}; save(); toast('모든 기록을 지웠어요');
-  });
+  $('#reloadBtn').addEventListener('click', () => location.reload());
 
-  // 자정이 지나면 첫 화면 날짜 갱신
-  setInterval(() => { if (!$('#home').hidden) renderHome(); }, 60 * 1000);
+  // 명단 새로 받기 (시트의 친구목록을 고치면 반영)
+  async function refreshKids() {
+    try {
+      const data = await api('init', { date: todayKey() });
+      kids = data.kids; LS.set('kids', kids);
+      dayCache[todayKey()] = Object.fromEntries(data.entries.map(e => [String(e.no), e]));
+      if (!$('#home').hidden) drawHome();
+    } catch (e) { handleError(e); }
+  }
 
-  show('home');
+  // 첫 화면에 머무는 동안 1분마다 오늘 기록·날짜 갱신
+  setInterval(() => { if (!$('#home').hidden) renderHome(true); }, 60 * 1000);
+
+  if (!classKey || !API_URL) show('settings');
+  else { show('home'); refreshKids(); flush(); }
 })();

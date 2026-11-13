@@ -3,3 +3,5 @@ tools/contact-sheet.png
 아름나무반-감정일기-*.json
 아름나무반-감정일기-*.csv
 .claude/settings.local.json
+tools/dev-db.json
+private/
