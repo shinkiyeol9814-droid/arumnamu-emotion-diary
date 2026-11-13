@@ -1,0 +1,5 @@
+tools/contact-sheet.png
+*.json.bak
+아름나무반-감정일기-*.json
+아름나무반-감정일기-*.csv
+.claude/settings.local.json
