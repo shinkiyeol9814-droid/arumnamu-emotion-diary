@@ -377,7 +377,7 @@
       show('home');
     } catch (e) {
       classKey = prev;
-      $('#connectErr').textContent = e.code === 'bad_key' ? '반 비밀번호가 달라요.' : '연결하지 못했어요. 인터넷과 주소를 확인해 주세요.';
+      $('#connectErr').textContent = e.code === 'bad_key' ? '반 비밀번호가 달라요.' : '구글 서버에 연결하지 못했어요. 인터넷을 확인해 주세요. (회사망처럼 script.google.com 이 막힌 곳에서는 안 돼요)';
     } finally { loading(false); }
   }
   $('#connectBtn').addEventListener('click', connect);
