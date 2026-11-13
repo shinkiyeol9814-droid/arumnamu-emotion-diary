@@ -97,6 +97,15 @@
     if (go) show(go.dataset.go);
   });
 
+  // 설정 화면은 아이들에게 숨김: 로고를 2.5초 안에 5번 누르면 열림 (관리자용)
+  let logoTaps = [];
+  $('.brand').addEventListener('click', () => {
+    const now = Date.now();
+    logoTaps = logoTaps.filter(t => now - t < 2500);
+    logoTaps.push(now);
+    if (logoTaps.length >= 5) { logoTaps = []; setTimeout(() => show('settings'), 0); }
+  });
+
   const kidName = no => (kids.find(k => k.no === String(no)) || {}).name || `${no}번`;
 
   // 하루 기록 = 시트 기록 + 아직 못 보낸 기록
@@ -277,7 +286,7 @@
       el('button', { class: 'btn small ghost', onclick: () => moveMonth(1) }, '▶'),
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn small ghost', onclick: () => pickDate(todayKey()) }, '오늘'),
-      el('button', { class: 'btn small ghost', onclick: () => window.print() }, '🖨️ 인쇄'));
+      el('button', { class: 'btn small ghost print-btn', onclick: () => window.print() }, '🖨️ 인쇄'));
     const grid = el('div', { class: 'cal-grid' });
     DAYS.forEach((d, i) => grid.append(el('div', { class: 'cal-dow' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') }, d)));
     for (let i = 0; i < first.getDay(); i++) grid.append(el('div'));
@@ -383,7 +392,10 @@
   $('#connectBtn').addEventListener('click', connect);
   $('#classKey').addEventListener('keydown', e => { if (e.key === 'Enter') connect(); });
   $('#disconnectBtn').addEventListener('click', () => {
-    if (pending.length && !confirm(`아직 올라가지 않은 기록 ${pending.length}개가 있어요. 그래도 연결을 해제할까요?`)) return;
+    const msg = pending.length
+      ? `아직 올라가지 않은 기록 ${pending.length}개가 있어요. 그래도 이 기기의 연결을 해제할까요?`
+      : '이 기기의 연결을 해제할까요? 다시 쓰려면 반 비밀번호가 필요해요.';
+    if (!confirm(msg)) return;
     classKey = ''; LS.del('key'); renderSettings(); renderStatus(); toast('연결을 해제했어요');
   });
   $('#reloadBtn').addEventListener('click', () => location.reload());

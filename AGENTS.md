@@ -24,7 +24,8 @@ AI 코딩 에이전트(Claude Code 등)와 사람이 **어느 PC에서든** 이�
 ## 구조
 ```
 src/                    ← GitHub Pages 로 배포되는 웹 앱 (빌드 없음, 순수 HTML/CSS/JS)
-  index.html            화면 6개(home, pick, write, done, board, kid, settings)를 <section> 으로 전환
+  index.html            화면(home, pick, write, done, board, kid, settings)을 <section> 으로 전환
+                        settings 는 메뉴에 없음: 로고(.brand) 2.5초 안에 5번 클릭 → 관리자 화면 (아이들에게 숨김)
   app.js                전체 로직 (IIFE 하나, 프레임워크 없음)
   style.css             디자인 (Jua/Gaegu 폰트, 노란 책 테마, ≤560px 휴대폰 대응)
   config.js             API_URL = Apps Script /exec 주소 (공개돼도 됨)
@@ -74,6 +75,8 @@ python tools/dev_server.py
 - Claude Code 데스크톱에서는 `.claude/launch.json`의 `emotion-app`으로 미리보기를 띄울 수 있습니다.
 - 바꾼 뒤에는 데스크톱(1280px)과 **휴대폰(360px)** 둘 다 가로 넘침이 없는지 확인합니다.
   예전에 `white-space: nowrap` 때문에 휴대폰 화면이 깨진 적이 있습니다.
+- **CSS 순서 주의**: `@media (max-width: 560px)` 휴대폰 블록은 `style.css` **맨 아래쪽**에 있어야 합니다.
+  기본 규칙이 그 뒤에 오면 휴대폰 규칙을 덮어씁니다. 예전에 로딩 표시가 세로로 길게 늘어난 적이 있습니다.
 
 ## 배포
 | 바꾼 것 | 반영 방법 |

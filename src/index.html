@@ -19,7 +19,6 @@
   <nav>
     <button class="nav-btn" data-go="home">🏠 처음</button>
     <button class="nav-btn" data-go="board">🌳 모아보기</button>
-    <button class="nav-btn ghost" data-go="settings">⚙️ 설정</button>
   </nav>
 </header>
 
@@ -97,11 +96,12 @@
   <section id="settings" class="screen" hidden>
     <div class="panel narrow">
       <h2>구글 시트 연결</h2>
-      <p>이 노트북에서 처음 한 번만 반 비밀번호를 입력하면 돼요.</p>
+      <p>이 기기에서 처음 한 번만 반 비밀번호를 입력하면 돼요.</p>
       <input type="password" id="classKey" inputmode="numeric" autocomplete="off" placeholder="반 비밀번호">
       <button class="btn primary" id="connectBtn">연결하기</button>
       <p class="err" id="connectErr"></p>
       <p class="hint" id="connectInfo"></p>
+      <p class="hint">🔒 이 화면은 메뉴에 보이지 않아요. 왼쪽 위 <b>로고를 5번 빠르게</b> 누르면 열려요.</p>
       <div class="row">
         <button class="btn small ghost" id="disconnectBtn">이 노트북 연결 해제</button>
         <button class="btn small ghost" id="reloadBtn">🔄 새로 불러오기</button>
