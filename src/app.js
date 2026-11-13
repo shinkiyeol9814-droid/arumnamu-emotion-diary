@@ -43,17 +43,22 @@
   let pending = LS.get('pending', []);      // 아직 시트에 못 올린 기록
   const dayCache = {};                      // date -> { no: entry }
   // 오늘 기록은 기기에도 보관 → 앱을 열자마자 ✔ 표시 (서버 응답은 뒤에 와서 갱신)
-  {
-    const t = LS.get('today', null);
-    if (t && t.date === ymdNow()) dayCache[t.date] = t.map;
-  }
+  // 날짜별 기록·친구별 기록·월 인원도 기기에 보관 → 화면을 바로 그리고, 서버 응답으로 갱신
+  const slimEnt = e => { const c = Object.assign({}, e); delete c.thumbData; delete c.photoData; delete c.pending; return c; };
+  const savedDays = LS.get('days', {});          // date -> { no: entry }  (최근 40일)
+  Object.assign(dayCache, savedDays);
+  const kidHist = LS.get('kidHist', {});         // no -> [entry]
   function setDay(date, map) {
     dayCache[date] = map;
-    if (date === todayKey()) {
-      const slim = {};
-      for (const [no, e] of Object.entries(map)) { const c = Object.assign({}, e); delete c.thumbData; delete c.photoData; slim[no] = c; }
-      LS.set('today', { date, map: slim });
-    }
+    const slim = {};
+    for (const [no, e] of Object.entries(map)) slim[no] = slimEnt(e);
+    savedDays[date] = slim;
+    Object.keys(savedDays).sort().reverse().slice(40).forEach(d => delete savedDays[d]);
+    LS.set('days', savedDays);
+  }
+  function setKidHist(no, list) {
+    kidHist[no] = list.slice(0, 120).map(slimEnt);
+    LS.set('kidHist', kidHist);
   }
   const toMap = entries => Object.fromEntries(entries.map(e => [String(e.no), e]));
 
@@ -106,7 +111,55 @@
   let boardDate = todayKey();
   let calMonth = todayKey().slice(0, 7);
 
+  // ---------- 뒤로가기(휴대폰 < 버튼) ----------
+  // 화면을 옮길 때마다 브라우저 기록에 남겨서, < 를 누르면 앱이 꺼지지 않고 이전 화면으로 감.
+  // 맨 처음 화면에서 < 를 누르면 "한 번 더 누르면 나가요" 안내 후, 2초 안에 한 번 더 눌러야 나감.
+  let curScreen = null;
+  let curDepth = 0;
+  let goingHome = false;
+  let lastGuard = 0;
+  function pushScreen(st) {
+    curDepth += 1;
+    history.pushState(Object.assign({ depth: curDepth }, st), '');
+  }
+  window.addEventListener('popstate', e => {
+    let st = e.state || { screen: 'home', depth: 0, guard: true };
+    // 사진 크게 보기가 열려 있으면 닫기만
+    if (!$('#viewer').hidden) { $('#viewer').hidden = true; curDepth = st.depth || 0; if (st.screen === curScreen && !st.guard) return; }
+    if (st.viewer) { history.back(); return; }
+    if (st.guard) {
+      if (Date.now() - lastGuard < 2000) { history.back(); return; } // 정말 나가기
+      lastGuard = Date.now();
+      toast('한 번 더 누르면 앱에서 나가요');
+      curDepth = 1;
+      history.pushState({ screen: curScreen || 'home', depth: 1, no: st.no }, '');
+      return;
+    }
+    curDepth = st.depth || 1;
+    if (goingHome) {
+      goingHome = false;
+      if (st.screen !== 'home') { history.replaceState({ screen: 'home', depth: curDepth }, ''); st = { screen: 'home' }; }
+    }
+    if (st.screen === 'kid') openKid(st.no, { fromHistory: true });
+    else if (st.screen !== curScreen) show(st.screen, { fromHistory: true });
+  });
+
   function show(id, opts = {}) {
+    if (!opts.fromHistory) {
+      if (opts.initial) {
+        history.replaceState({ screen: 'home', depth: 0, guard: true }, '');
+        curDepth = 0; pushScreen({ screen: id });
+      } else if (id === 'home' && curDepth > 1) {
+        // 쌓인 화면을 한 번에 되돌아가 첫 화면으로 (뒤로가기 기록이 끝없이 쌓이지 않게)
+        goingHome = true; history.go(-(curDepth - 1)); return;
+      } else if (opts.replace || (id === 'home' && curDepth <= 1)) {
+        curDepth = Math.max(curDepth, 1);
+        history.replaceState({ screen: id, depth: curDepth }, '');
+      } else if (id !== curScreen) {
+        pushScreen({ screen: id });
+      }
+    }
+    curScreen = id;
     document.querySelectorAll('.screen').forEach(s => { s.hidden = s.id !== id; });
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.go === id));
     window.scrollTo(0, 0);
@@ -327,6 +380,7 @@
     const token = ++viewerToken;
     let gotFull = false;
     img.removeAttribute('src');
+    if (v.hidden) pushScreen(Object.assign({}, history.state, { viewer: true }));
     v.hidden = false;
     if (ent.photoData) { img.src = ent.photoData; return; }
     // 1) 작은 사진을 먼저 크게 띄우고 (보통 이미 받아 둠) 2) 큰 사진이 오면 바꿔 끼움
@@ -338,7 +392,7 @@
     photoSrc(id).then(s => { gotFull = true; if (token === viewerToken) img.src = s; })
       .catch(() => toast('사진을 불러오지 못했어요')).finally(() => loading(false));
   }
-  $('#viewer').addEventListener('click', () => { $('#viewer').hidden = true; });
+  $('#viewer').addEventListener('click', () => { history.back(); }); // popstate 에서 닫힘
 
   function renderPhoto() {
     const box = $('#photoPreview'); const img = $('#photoImg');
@@ -386,8 +440,9 @@
   });
 
   $('#reason').addEventListener('input', e => { current.text = e.target.value; });
-  $('#changeEmotion').addEventListener('click', () => { renderPick(); show('pick'); });
-  $('#backToPick').addEventListener('click', () => { renderPick(); show('pick'); });
+  const backToPick = () => { renderPick(); history.back(); };
+  $('#changeEmotion').addEventListener('click', backToPick);
+  $('#backToPick').addEventListener('click', backToPick);
 
   $('#saveBtn').addEventListener('click', async () => {
     const entry = {
@@ -403,14 +458,18 @@
     pending.push(entry);
     // 사진이 커서 노트북에 임시 보관을 못 하면, 바로 올리기만 시도함
     if (!LS.set('pending', pending)) console.warn('pending 보관 실패(용량)');
+    // 친구별 기록 사본에도 바로 반영
+    if (kidHist[entry.no]) setKidHist(entry.no, [slimEnt(entry)].concat(kidHist[entry.no].filter(x => x.date !== entry.date)));
     $('#doneImg').src = imgOf(entry.emotion);
     $('#doneName').textContent = kidName(entry.no);
-    $('#doneNote').textContent = '저장하는 중…';
-    show('done');
+    // 기록은 이미 기기에 안전하게 보관됨 → 아이는 바로 다음 친구에게. 구글 시트 저장은 뒤에서.
+    $('#doneNote').textContent = '다음 친구에게 넘겨 주세요 🌱';
+    const sync = $('#doneSync');
+    sync.className = 'done-sync'; sync.textContent = entry.photoData ? '☁️ 사진과 함께 올리는 중…' : '☁️ 올리는 중…';
+    show('done', { replace: true });
     await flush();
-    $('#doneNote').textContent = pending.includes(entry)
-      ? '인터넷이 연결되면 자동으로 저장돼요. 다음 친구에게 넘겨 주세요 🌱'
-      : '일기가 저장되었어요. 다음 친구에게 넘겨 주세요 🌱';
+    if (pending.includes(entry)) { sync.className = 'done-sync wait'; sync.textContent = '📡 인터넷이 연결되면 자동으로 올라가요'; }
+    else { sync.className = 'done-sync ok'; sync.textContent = '✅ 구글 시트에 저장됐어요'; }
   });
 
   // ---------- 4. 모아보기 (달력 + 하루 기록) ----------
@@ -449,9 +508,12 @@
       el('div', { class: 'meta' }, (t ? `${t}에 씀` : '') + (ent.pending ? ' · 📡 올리는 중' : '')));
   }
 
-  const monthCounts = {}; // 'YYYY-MM' -> { date: n }
+  const monthCounts = LS.get('months', {}); // 'YYYY-MM' -> { date: n }
   async function loadMonth(month) {
-    try { monthCounts[month] = (await api('month', { month })).days; } catch (e) { handleError(e); }
+    try {
+      monthCounts[month] = (await api('month', { month })).days;
+      LS.set('months', monthCounts);
+    } catch (e) { handleError(e); }
   }
   function drawCalendar() {
     const [y, m] = calMonth.split('-').map(Number);
@@ -517,15 +579,29 @@
     drawCalendar(); drawBoardDay();
   }
 
-  async function openKid(no) {
+  async function openKid(no, opts = {}) {
+    if (!opts.fromHistory) pushScreen({ screen: 'kid', no });
+    curScreen = 'kid';
     $('#kidTitle').textContent = `${kidName(no)}의 감정일기`;
-    $('#kidTally').innerHTML = ''; $('#kidHistory').innerHTML = '';
     document.querySelectorAll('.screen').forEach(s => { s.hidden = s.id !== 'kid'; });
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.go === 'board'));
     window.scrollTo(0, 0);
+    // 1) 기기에 있는 것으로 바로 그림
+    let cached = kidHist[no];
+    if (!cached) cached = Object.keys(dayCache).filter(d => dayCache[d][no]).map(d => Object.assign({ date: d }, dayCache[d][no]));
+    drawKid(no, cached);
+    // 2) 서버에서 최신을 받아 다시 그림
     loading(true);
-    let list = [];
-    try { list = (await api('kid', { no })).entries; } catch (e) { handleError(e); }
-    loading(false);
+    try {
+      const list = (await api('kid', { no })).entries;
+      setKidHist(no, list);
+      if (curScreen === 'kid' && history.state && String(history.state.no) === String(no)) drawKid(no, list);
+    } catch (e) { handleError(e); }
+    finally { loading(false); }
+  }
+  function drawKid(no, list) {
+    list = list.slice();
+    $('#kidTally').innerHTML = ''; $('#kidHistory').innerHTML = '';
     pending.filter(p => p.no === no).forEach(p => {
       list = list.filter(x => x.date !== p.date); list.push(Object.assign({ pending: true }, p));
     });
@@ -599,6 +675,6 @@
   // 첫 화면에 머무는 동안 1분마다 오늘 기록·날짜 갱신
   setInterval(() => { if (!$('#home').hidden) renderHome(true); }, 60 * 1000);
 
-  if (!classKey || !API_URL) show('settings');
-  else { show('home', { refresh: false }); refreshKids(); flush(); }
+  if (!classKey || !API_URL) show('settings', { initial: true });
+  else { show('home', { initial: true, refresh: false }); refreshKids(); flush(); }
 })();

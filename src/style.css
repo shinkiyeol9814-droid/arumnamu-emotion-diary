@@ -242,6 +242,11 @@ main { max-width: 1200px; margin: 0 auto; padding: 20px 20px 60px; }
 
 .photo-missing { font-size: 15px; color: var(--muted); background: #f3f3f3; border-radius: 10px; padding: 8px; text-align: center; }
 
+/* 완료 화면: 구글 시트 저장 상태 */
+.done-sync { font-size: 16px; color: var(--muted); margin: -10px 0 18px; min-height: 22px; }
+.done-sync.ok { color: var(--green-dark); }
+.done-sync.wait { color: #b07800; }
+
 /* 휴대폰 */
 html, body { overflow-x: hidden; }
 .book > .page { min-width: 0; }
