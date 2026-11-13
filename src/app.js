@@ -31,6 +31,11 @@
   const isLocalDev = ['localhost', '127.0.0.1'].includes(location.hostname);
   const API_URL = isLocalDev ? '/api' : ((window.APP_CONFIG || {}).API_URL || '');
 
+  // apps-script/Code.gs 의 SERVER_VERSION 과 맞춤 (2 = 사진 기능)
+  const NEED_SERVER_VERSION = 2;
+  let serverVersion = null;        // 마지막 응답의 서버 버전 (예전 Code.gs 는 버전이 없어서 1로 봄)
+  let homeLoadFailed = false;
+
   let classKey = LS.get('key', '');
   let kids = LS.get('kids', []);           // [{no, name}]
   let pending = LS.get('pending', []);      // 아직 시트에 못 올린 기록
@@ -47,6 +52,7 @@
       redirect: 'follow',
     });
     const data = await res.json();
+    serverVersion = data.version || 1;
     if (!data.ok) { const err = new Error(data.error || 'error'); err.code = data.error; throw err; }
     return data;
   }
@@ -137,6 +143,8 @@
       const res = await api('save', { entries: batch });
       pending = pending.filter(p => !batch.includes(p));
       LS.set('pending', pending);
+      const lostPhoto = batch.some(p => p.photoData) && !(res.items || []).some(x => x.photoId);
+      if (lostPhoto) toast('⚠️ 글은 저장됐지만 사진은 저장되지 않았어요. 구글 Apps Script를 새 버전으로 배포해야 해요.');
       batch.forEach(p => {
         const done = (res.items || []).find(x => x.date === p.date && String(x.no) === String(p.no)) || {};
         const ent = Object.assign({}, p, { photoId: done.photoId || null, thumbId: done.thumbId || null });
@@ -152,6 +160,12 @@
   function renderStatus() {
     const s = $('#syncStatus');
     if (!classKey || !API_URL) { s.hidden = false; s.textContent = '⚙️ 아직 구글 시트에 연결되지 않았어요. 선생님이 "설정"에서 연결해 주세요.'; return; }
+    if (serverVersion !== null && serverVersion < NEED_SERVER_VERSION) {
+      s.hidden = false;
+      s.textContent = '⚠️ 구글 Apps Script가 예전 버전이라 사진이 저장되지 않아요. 선생님: 배포 관리 → ✏️ → 새 버전으로 배포해 주세요.';
+      return;
+    }
+    if (homeLoadFailed) { s.hidden = false; s.textContent = '📡 오늘 기록을 불러오지 못했어요. 인터넷을 확인해 주세요.'; return; }
     if (pending.length) { s.hidden = false; s.textContent = `📡 인터넷 연결을 기다리는 기록 ${pending.length}개 · 연결되면 자동으로 올라가요`; return; }
     s.hidden = true;
   }
@@ -162,7 +176,8 @@
     renderStatus();
     drawHome();
     if (refresh && classKey && API_URL) {
-      if (await loadDay(todayKey())) drawHome();
+      homeLoadFailed = !(await loadDay(todayKey()));
+      drawHome(); renderStatus();
     }
   }
   function drawHome() {
@@ -180,6 +195,26 @@
         el('span', {}, k.name)));
     });
     $('#doneCount').textContent = kids.length ? `· 오늘 ${done} / ${kids.length}명 썼어요` : '';
+    drawTodayStrip(today);
+  }
+
+  // 첫 화면 위쪽: 오늘 일기를 쓴 친구들 (누르면 그 친구 기록)
+  function drawTodayStrip(today) {
+    const box = $('#todayStrip'); box.innerHTML = '';
+    const list = kids.filter(k => today[k.no]);
+    Object.keys(today).filter(no => !kids.some(k => k.no === no)).forEach(no => list.push({ no, name: today[no].name || `${no}번` }));
+    box.hidden = !list.length;
+    if (!list.length) return;
+    box.append(el('div', { class: 'strip-title' }, `🌱 오늘 일기를 쓴 친구 ${list.length}명`));
+    const row = el('div', { class: 'strip-row' });
+    list.forEach(k => {
+      const ent = today[k.no];
+      row.append(el('button', { class: 'strip-kid', title: EMO[ent.emotion]?.name || '', onclick: () => openKid(k.no) },
+        el('img', { src: imgOf(ent.emotion), alt: '' }),
+        el('span', {}, k.name),
+        hasPhoto(ent) ? el('span', { class: 'strip-cam', 'aria-label': '사진 있음' }, '📷') : null));
+    });
+    box.append(row);
   }
 
   function startKid(no) {
@@ -244,7 +279,9 @@
     const data = ent.thumbData || ent.photoData;
     const id = ent.thumbId || ent.photoId;
     if (data) img.src = data;
-    else photoSrc(id).then(src => { img.src = src; }).catch(() => img.remove());
+    else photoSrc(id).then(src => { img.src = src; }).catch(() => {
+      img.replaceWith(el('div', { class: 'photo-missing' }, '📷 사진을 불러오지 못했어요'));
+    });
     return img;
   }
   function openViewer(ent) {
@@ -471,7 +508,10 @@
     $('#connectErr').textContent = '';
     $('#connectInfo').textContent = !API_URL
       ? '⚠️ config.js 에 앱스 스크립트 주소(API_URL)가 아직 없어요. SETUP.md 를 보세요.'
-      : classKey ? `✅ 연결됨 · 친구 ${kids.length}명` : '아직 연결되지 않았어요.';
+      : classKey
+        ? `✅ 연결됨 · 친구 ${kids.length}명` + (serverVersion === null ? '' : ` · 서버 v${serverVersion}`
+          + (serverVersion < NEED_SERVER_VERSION ? ' ⚠️ 사진 안 됨: Apps Script 새 버전 배포 필요' : ' (사진 OK)'))
+        : '아직 연결되지 않았어요.';
   }
   async function connect() {
     const key = $('#classKey').value.trim();

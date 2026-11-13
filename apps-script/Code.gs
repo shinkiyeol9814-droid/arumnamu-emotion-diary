@@ -15,6 +15,10 @@
  *   - 사진은 공유 링크 없이 비공개로 두고, 반 비밀번호가 맞을 때만 이 스크립트가 꺼내 줍니다.
  */
 
+// 이 파일을 바꿀 때마다 올리고, src/app.js 의 NEED_SERVER_VERSION 과 맞춥니다.
+// 2 = 사진 기능
+const SERVER_VERSION = 2;
+
 const SHEET_KIDS = '친구목록';
 const SHEET_ENTRIES = '기록';
 const ENTRY_HEADERS = ['날짜', '번호', '이름', '감정', '날씨', '이유', '저장시각', '감정ID', '날씨ID', '사진ID', '썸네일ID'];
@@ -88,6 +92,7 @@ function doPost(e) {
 }
 
 function json(obj) {
+  obj.version = SERVER_VERSION; // 앱이 "예전 버전 배포" 를 알아챌 수 있게
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 

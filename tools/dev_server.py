@@ -14,6 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'src')
 DB = os.path.join(ROOT, 'tools', 'dev-db.json')
 KEY = '0000'
+OLD_SERVER = '--old' in sys.argv  # 사진 기능 전 Code.gs 흉내 (사진 무시, 버전 없음)
 EMO = {f'e{i:02d}' for i in range(1, 31)}
 
 
@@ -87,13 +88,15 @@ class Handler(SimpleHTTPRequestHandler):
                 ent['photoId'], ent['thumbId'] = old.get('photoId'), old.get('thumbId')
                 if src.get('photoData') or src.get('photoRemove'):
                     ent['photoId'] = ent['thumbId'] = None  # (실제 Code.gs 는 예전 파일을 휴지통으로)
-                if src.get('photoData'):
+                if src.get('photoData') and not OLD_SERVER:
                     ent['photoId'] = save_photo(src['photoData'])
                     ent['thumbId'] = save_photo(src.get('thumbData') or src['photoData'])
                 db['entries'] = [e for e in db['entries'] if not (e['date'] == ent['date'] and e['no'] == ent['no'])]
                 db['entries'].append(ent)
                 items.append({'date': ent['date'], 'no': ent['no'], 'photoId': ent['photoId'], 'thumbId': ent['thumbId']})
             store(db)
+            if OLD_SERVER:
+                return {'ok': True, 'saved': len(items)}
             return {'ok': True, 'saved': len(items), 'items': items}
         if a == 'photo':
             pid = str(req.get('id') or '')
@@ -106,6 +109,8 @@ class Handler(SimpleHTTPRequestHandler):
         return {'ok': False, 'error': 'unknown_action'}
 
     def reply(self, obj):
+        if not OLD_SERVER:
+            obj['version'] = 2
         body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -115,6 +120,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    port = int(args[0]) if args else 8765
     print(f'http://localhost:{port}  (반 비밀번호 {KEY})')
     ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
